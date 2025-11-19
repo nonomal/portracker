@@ -138,7 +138,9 @@ export function useWhatsNew() {
             
             if (!isDismissed) {
               logger.debug('Opening What\'s New modal');
-              setIsModalOpen(true);
+              setTimeout(() => {
+                setIsModalOpen(true);
+              }, 1000);
             }
           }
         }

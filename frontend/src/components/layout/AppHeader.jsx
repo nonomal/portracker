@@ -8,11 +8,15 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
-import { RefreshCw, Loader2, Search, X, Sun, Moon, Menu, SlidersHorizontal, Sparkles } from "lucide-react";
+import { RefreshCw, Loader2, Search, X, Sun, Moon, Menu, SlidersHorizontal, Sparkles, LogOut, User, Timer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Logo from "@/components/Logo";
+import { useAuth } from "@/contexts/AuthContext";
+import { RefreshProgress } from "@/components/ui/RefreshProgress";
+import { useLongPress } from "@/lib/hooks/useLongPress";
 
 export function AppHeader({
   loading,
@@ -32,7 +36,14 @@ export function AppHeader({
   onToggleSidebar,
   onShowWhatsNew,
   hasNewFeatures = false,
+  autoRefreshEnabled = false,
+  onAutoRefreshToggle,
+  onLogoLongPress,
+  hackerMode = false,
+  onDisableHackerMode,
+  autoRefreshMessages = [],
 }) {
+  const auth = useAuth();
   const [localSearchTerm, setLocalSearchTerm] = useState(searchTerm);
   const [searching, setSearching] = useState(false);
 
@@ -105,9 +116,18 @@ export function AppHeader({
     return "pr-10";
   };
 
+  const logoLongPressHandlers = useLongPress(
+    () => {
+      if (onLogoLongPress) {
+        onLogoLongPress();
+      }
+    },
+    { threshold: 800 }
+  );
+
   return (
-    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 relative flex-shrink-0">
-      <div className="min-h-16 px-4 sm:px-6 py-2 flex flex-col md:flex-row items-center justify-between gap-4">
+    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 relative flex-shrink-0 isolate z-10">
+      <div className="min-h-16 px-4 sm:px-6 py-2 flex flex-col md:flex-row items-center justify-between gap-4 relative z-10">
         <div className="flex items-center gap-4 w-full md:w-auto">
           <button
             onClick={onToggleSidebar}
@@ -118,6 +138,7 @@ export function AppHeader({
           </button>
           <button
             onClick={onGoHome}
+            {...logoLongPressHandlers}
             className="flex items-center gap-3 text-xl font-bold text-slate-800 dark:text-slate-200 group cursor-pointer"
           >
             <Logo
@@ -211,13 +232,13 @@ export function AppHeader({
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <div className="flex space-x-2">
+          <div className="flex space-x-2 relative z-20">
             {filterButtons.map((filter) => (
               <Tooltip key={filter.key}>
                 <TooltipTrigger asChild>
                   <button
                     onClick={filter.onClick}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors relative ${
                       filter.isActive
                         ? filter.activeClass
                         : "bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -249,6 +270,26 @@ export function AppHeader({
             </TooltipTrigger>
             <TooltipContent>{loading ? "Refreshing..." : "Refresh all data"}</TooltipContent>
           </Tooltip>
+
+          {onAutoRefreshToggle && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onAutoRefreshToggle}
+                  className={`hover:bg-gray-100 dark:hover:bg-gray-800 ${
+                    autoRefreshEnabled ? 'text-indigo-600 dark:text-indigo-400' : ''
+                  }`}
+                >
+                  <Timer className="h-5 w-5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {autoRefreshEnabled ? "Auto-refresh enabled (30s)" : "Enable auto-refresh"}
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           <div className="h-6 border-l border-gray-200 dark:border-gray-700 hidden sm:block"></div>
 
@@ -292,10 +333,54 @@ export function AppHeader({
             </TooltipTrigger>
             <TooltipContent>{isDarkMode ? "Switch to light mode" : "Switch to dark mode"}</TooltipContent>
           </Tooltip>
+
+          {hackerMode && onDisableHackerMode && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-emerald-500 border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10"
+              onClick={onDisableHackerMode}
+            >
+              Exit Hacker Mode
+            </Button>
+          )}
+
+          {auth.authEnabled && auth.authenticated && (
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer"
+                    >
+                      <User className="h-5 w-5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>Account</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end" className="w-48">
+                <div className="px-2 py-1.5 text-sm font-medium text-slate-900 dark:text-slate-100">
+                  {auth.username}
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={auth.logout} className="text-red-600 dark:text-red-400">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
 
-      
+      <RefreshProgress
+        active={autoRefreshEnabled && !loading}
+        duration={30000}
+        messages={autoRefreshMessages || []}
+      />
     </header>
   );
 }
