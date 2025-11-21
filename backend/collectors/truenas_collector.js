@@ -93,6 +93,21 @@ class TrueNASCollector extends BaseCollector {
   }
 
   /**
+   * Cleanup method to properly close connections
+   * Should be called when the collector is no longer needed
+   */
+  cleanup() {
+    if (this.client) {
+      try {
+        this.client.close();
+        this.log("TrueNAS WebSocket connection closed during cleanup");
+      } catch (closeErr) {
+        this.logWarn("Error while closing TrueNAS client during cleanup:", closeErr.message);
+      }
+    }
+  }
+
+  /**
    * Safely convert container names to string format
    * Docker API can return Names as either string or array depending on context
    * @param {string|Array} names - Container names from Docker API
@@ -1192,8 +1207,11 @@ class TrueNASCollector extends BaseCollector {
       if (apiKey) {
         this.logInfo("API key detected - collecting enhanced TrueNAS features");
         
+        const enhancedFeaturesTimeout = parseInt(process.env.TRUENAS_TIMEOUT_MS || '45000', 10);
+        this.log(`Using enhanced features timeout: ${enhancedFeaturesTimeout/1000}s`);
+        
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("TrueNAS connection timeout after 15 seconds")), 15000)
+          setTimeout(() => reject(new Error(`TrueNAS enhanced features timeout after ${enhancedFeaturesTimeout/1000} seconds - your TrueNAS middleware may be slow or unresponsive`)), enhancedFeaturesTimeout)
         );
         
         try {
@@ -1201,6 +1219,7 @@ class TrueNASCollector extends BaseCollector {
             this._collectEnhancedFeatures(),
             timeoutPromise
           ]);
+          
           if (enhancedData.systemInfo) {
             results.systemInfo = {
               ...results.systemInfo,
@@ -1208,6 +1227,7 @@ class TrueNASCollector extends BaseCollector {
               enhanced: true,
             };
           }
+          
           if (enhancedData.apps && enhancedData.apps.length > 0) {
             const truenasApps = enhancedData.apps.map((app) => ({
               type: "application",
@@ -1274,18 +1294,26 @@ class TrueNASCollector extends BaseCollector {
             this.log(`Collected ${lxcContainers.length} TrueNAS LXC containers`);
           }
           this.logInfo("Enhanced features collection completed successfully");
+          
+          const enhancedCollectionDuration = Date.now() - perf.operations.get("enhanced-features-collection")?.startTime || 0;
+          if (enhancedCollectionDuration > 10000) {
+            this.logWarn(`Enhanced features collection took ${(enhancedCollectionDuration/1000).toFixed(1)}s - your TrueNAS system may be under load or have resource constraints`);
+            this.logInfo("Consider: reducing number of apps, checking system resources (CPU/RAM/disk), or increasing TRUENAS_TIMEOUT_MS");
+          }
         } catch (err) {
           this.logWarn("TrueNAS enhanced features collection failed:", err.message);
           this.logInfo("Continuing with Docker and system port data only");
-        } finally {
-          if (this.client) {
-            try {
-              this.client.close();
-            } catch (closeErr) {
-              this.logWarn("Error while closing TrueNAS client:", closeErr.message);
-            }
+          
+          if (err.message.includes('timeout')) {
+            this.logInfo("💡 Troubleshooting tips:");
+            this.logInfo("  1. Check TrueNAS system resources: CPU, RAM, disk I/O");
+            this.logInfo("  2. Restart TrueNAS middleware: systemctl restart middlewared");
+            this.logInfo("  3. Increase timeout: set TRUENAS_TIMEOUT_MS=60000 (60 seconds)");
+            this.logInfo("  4. Check middleware logs: journalctl -u middlewared -n 100");
           }
         }
+        /* Note: WebSocket connection is kept alive for reuse in subsequent scans
+         * The connection has a keep-alive ping mechanism and will be closed when collector is destroyed */
       } else {
         this.logInfo(
           "No TRUENAS_API_KEY provided - enhanced features disabled"
@@ -1779,48 +1807,77 @@ class TrueNASCollector extends BaseCollector {
       systemInfo: null,
       apps: [],
       vms: [],
+      containers: [],
+      partialFailure: false,
     };
+    
+    this.logInfo("Attempting enhanced TrueNAS API calls...");
+    
     try {
-      this.logInfo("Attempting enhanced TrueNAS API calls...");
-      try {
-        const systemInfo = await this.client.call("system.info");
-        results.systemInfo = systemInfo;
-        this.log("Enhanced system info retrieved");
-      } catch (err) {
-        this.logWarn(
-          "Enhanced system info API call failed:",
-          err.message.substring(0, 50)
-        );
-      }
-      try {
-        const apps = await this.client.call("app.query");
-        results.apps = apps || [];
-      } catch (err) {
-        this.logWarn(
-          "TrueNAS apps API query failed:",
-          err.message.substring(0, 50)
-        );
-      }
-      try {
-        const vms = await this.client.call("vm.query");
-        results.vms = vms || [];
-      } catch (err) {
-        this.logWarn("VM API query failed:", err.message.substring(0, 50));
-      }
-      try {
-        const containers = await this.client.call("virt.instance.query");
-        results.containers = containers || [];
-      } catch (err) {
-        this.logWarn("LXC Container API query failed:", err.message.substring(0, 50));
+      const startTime = Date.now();
+      const systemInfo = await this.client.call("system.info");
+      results.systemInfo = systemInfo;
+      const duration = Date.now() - startTime;
+      this.log(`Enhanced system info retrieved in ${duration}ms`);
+      if (duration > 5000) {
+        this.logWarn(`system.info took ${(duration/1000).toFixed(1)}s - middleware may be slow`);
       }
     } catch (err) {
-      this.logError(
-        "Overall enhanced features collection failed:",
-        err.message,
-        err.stack
+      this.logWarn(
+        "Enhanced system info API call failed (continuing with basic info):",
+        err.message.substring(0, 100)
       );
-      throw err;
+      results.partialFailure = true;
     }
+    
+    try {
+      const startTime = Date.now();
+      this.log("Querying TrueNAS apps (this may take a while on systems with many apps)...");
+      const apps = await this.client.call("app.query");
+      results.apps = apps || [];
+      const duration = Date.now() - startTime;
+      this.log(`TrueNAS apps query completed in ${duration}ms (${(apps || []).length} apps found)`);
+      
+      if (duration > 10000) {
+        this.logWarn(`app.query took ${(duration/1000).toFixed(1)}s - consider reducing number of TrueNAS apps for better performance`);
+      }
+    } catch (err) {
+      this.logWarn(
+        "TrueNAS apps API query failed (VMs will still be collected):",
+        err.message.substring(0, 100)
+      );
+      results.partialFailure = true;
+    }
+      
+    try {
+      const startTime = Date.now();
+      const vms = await this.client.call("vm.query");
+      results.vms = vms || [];
+      const duration = Date.now() - startTime;
+      this.log(`VM query completed in ${duration}ms (${(vms || []).length} VMs found)`);
+    } catch (err) {
+      this.logWarn("VM API query failed (continuing with other data):", err.message.substring(0, 100));
+      results.partialFailure = true;
+    }
+    
+    try {
+      const startTime = Date.now();
+      const containers = await this.client.call("virt.instance.query");
+      results.containers = containers || [];
+      const duration = Date.now() - startTime;
+      this.log(`LXC container query completed in ${duration}ms (${(containers || []).length} containers found)`);
+    } catch (err) {
+      this.logWarn("LXC Container API query failed (continuing with other data):", err.message.substring(0, 100));
+      results.partialFailure = true;
+    }
+    
+    const totalCollected = (results.apps?.length || 0) + (results.vms?.length || 0) + (results.containers?.length || 0);
+    if (results.partialFailure) {
+      this.logWarn(`Partial enhanced features collection: ${totalCollected} items collected (some API calls failed)`);
+    } else {
+      this.log(`Enhanced features collection successful: ${totalCollected} items collected`);
+    }
+    
     return results;
   }
 
